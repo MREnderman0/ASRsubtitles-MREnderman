@@ -25,7 +25,7 @@ target_language: '简体中文'
 demucs: true
 
 asr:
-  backend: 'qwen3'
+  backend: 'whisperx'
   qwen3:
     model_path: './_model_cache/Qwen3-ASR-1.7B'
     forced_aligner_path: './_model_cache/Qwen3-ForcedAligner-0.6B'
