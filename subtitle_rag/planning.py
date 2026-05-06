@@ -5,8 +5,10 @@ import difflib
 import html
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import json_repair
@@ -24,6 +26,7 @@ STRONG_PUNCTUATION = "，。？！,?!"
 ALL_PUNCTUATION = "，。？！；：、,.!?;:《》〈〉“”‘’\"'（）()【】[]{}—…-"
 SLASH = "/"
 ProgressCallback = Any
+DEBUG_WRITE_LOCK = Lock()
 
 
 @dataclass
@@ -37,6 +40,7 @@ class BoundaryStats:
     fallback_used: bool = False
     segment_count: int = 0
     retry_count: int = 0
+    max_workers: int = 1
     report_path: str = ""
     llm_path: str = ""
     debug_path: str = ""
@@ -48,6 +52,7 @@ def plan_segments_from_words(
     run_dir: Path,
     window_seconds: float | None = None,
     overlap_seconds: float | None = None,
+    max_workers: int | None = None,
     progress: ProgressCallback | None = None,
 ) -> tuple[list[Segment], dict[str, Any]]:
     report_path = run_dir / "boundary_plan_report.csv"
@@ -55,9 +60,11 @@ def plan_segments_from_words(
     debug_path = run_dir / "boundary_plan_debug.md"
     window_seconds = float(window_seconds or BOUNDARY_BLOCK_SECONDS)
     overlap_seconds = float(overlap_seconds if overlap_seconds is not None else BOUNDARY_OVERLAP_SECONDS)
+    max_workers = max(1, int(max_workers or 1))
     stats = BoundaryStats(
         block_seconds=int(window_seconds),
         overlap_seconds=int(overlap_seconds),
+        max_workers=max_workers,
         report_path=str(report_path),
         llm_path=str(llm_path),
         debug_path=str(debug_path),
@@ -76,36 +83,53 @@ def plan_segments_from_words(
     rows: list[dict[str, Any]] = []
     planned_candidates: list[dict[str, Any]] = []
 
+    jobs: list[dict[str, Any]] = []
     for block_index, block in enumerate(blocks, start=1):
         block_tokens = _tokens_in_range(tokens, block["input_start"], block["input_end"])
-        if not block_tokens:
-            continue
-        raw_text = _join_token_text(block_tokens)
-        try:
-            planned_text, prompt, attempts, retry_records = _plan_boundary_text(
-                raw_text,
-                max_chars=max_chars,
-                debug_path=debug_path,
-                block_index=block_index,
-                block=block,
-                progress=progress,
+        if block_tokens:
+            jobs.append(
+                {
+                    "block_index": block_index,
+                    "block": block,
+                    "block_tokens": block_tokens,
+                    "raw_text": _join_token_text(block_tokens),
+                }
             )
-            sentence_candidates = _candidate_sentences(block_tokens, planned_text, block)
-            planned_candidates.extend(sentence_candidates)
-            stats.success_count += 1
-            stats.retry_count += max(0, attempts - 1)
-            rows.append(_report_row(block_index, block, "success", f"attempts={attempts}; retries={max(0, attempts - 1)}", raw_text, planned_text))
-            payloads.append({
-                "block": block,
-                "raw_text": raw_text,
-                "planned_text": planned_text,
-                "attempts": attempts,
-                "retry_records": retry_records,
-                "prompt_chars": len(prompt),
-            })
-        except Exception as exc:
-            stats.failed_count += 1
-            rows.append(_report_row(block_index, block, "failed", str(exc), raw_text, ""))
+
+    completed = 0
+    if jobs:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as executor:
+            futures = [executor.submit(_plan_boundary_block, job, max_chars, debug_path) for job in jobs]
+            for future in as_completed(futures):
+                completed += 1
+                result = future.result()
+                block_index = int(result["block_index"])
+                block = result["block"]
+                raw_text = str(result["raw_text"])
+                if result["status"] == "success":
+                    planned_text = str(result["planned_text"])
+                    sentence_candidates = _candidate_sentences(result["block_tokens"], planned_text, block)
+                    planned_candidates.extend(sentence_candidates)
+                    attempts = int(result["attempts"])
+                    stats.success_count += 1
+                    stats.retry_count += max(0, attempts - 1)
+                    rows.append(_report_row(block_index, block, "success", f"attempts={attempts}; retries={max(0, attempts - 1)}", raw_text, planned_text))
+                    payloads.append({
+                        "block": block,
+                        "raw_text": raw_text,
+                        "planned_text": planned_text,
+                        "attempts": attempts,
+                        "retry_records": result["retry_records"],
+                        "prompt_chars": len(str(result["prompt"])),
+                    })
+                    if progress:
+                        retry_note = f"，重试 {attempts - 1} 次" if attempts > 1 else ""
+                        progress(f"LLM 分词 block {block_index}/{len(blocks)} 完成{retry_note}", 0.53 + 0.04 * (completed / max(len(jobs), 1)))
+                else:
+                    stats.failed_count += 1
+                    rows.append(_report_row(block_index, block, "failed", str(result["error"]), raw_text, ""))
+                    if progress:
+                        progress(f"FAIL:LLM 分词 block {block_index}/{len(blocks)} 失败：{result['error']}", 0.53 + 0.04 * (completed / max(len(jobs), 1)))
 
     selected = _select_sentence_candidates(planned_candidates)
     if selected:
@@ -116,9 +140,35 @@ def plan_segments_from_words(
         segments = []
         stats.fallback_used = True
 
-    _write_report(report_path, rows)
+    _write_report(report_path, sorted(rows, key=lambda row: int(row["block_index"])))
+    payloads.sort(key=lambda item: float(item["block"]["core_start"]))
     llm_path.write_text(json.dumps(payloads, ensure_ascii=False, indent=2), encoding="utf-8")
     return segments, _stats_dict(stats)
+
+
+def _plan_boundary_block(job: dict[str, Any], max_chars: int, debug_path: Path) -> dict[str, Any]:
+    block_index = int(job["block_index"])
+    block = job["block"]
+    raw_text = str(job["raw_text"])
+    try:
+        planned_text, prompt, attempts, retry_records = _plan_boundary_text(
+            raw_text,
+            max_chars=max_chars,
+            debug_path=debug_path,
+            block_index=block_index,
+            block=block,
+            progress=None,
+        )
+        return {
+            **job,
+            "status": "success",
+            "planned_text": planned_text,
+            "prompt": prompt,
+            "attempts": attempts,
+            "retry_records": retry_records,
+        }
+    except Exception as exc:
+        return {**job, "status": "failed", "error": str(exc)}
 
 
 def _tokens_from_words(words: pd.DataFrame) -> list[dict[str, Any]]:
@@ -271,6 +321,7 @@ def _plan_boundary_text(
     last_error: Exception | None = None
     last_prompt = ""
     retry_records: list[dict[str, Any]] = []
+    best_candidate: dict[str, Any] | None = None
     for attempt in range(1, BOUNDARY_MAX_ATTEMPTS + 1):
         planned_text, prompt = _ask_boundary_llm(raw_text, max_chars=max_chars, feedback=feedback)
         last_prompt = prompt
@@ -286,6 +337,15 @@ def _plan_boundary_text(
                     "skipped_ratio": round(skipped_ratio, 4),
                 }
             )
+            candidate = {
+                "planned_text": planned_text,
+                "prompt": prompt,
+                "attempt": attempt,
+                "projection": projection,
+                "skipped_ratio": skipped_ratio,
+            }
+            if best_candidate is None or skipped_ratio < float(best_candidate["skipped_ratio"]):
+                best_candidate = candidate
             if skipped_ratio > BOUNDARY_RETRY_SKIPPED_RATIO and attempt < BOUNDARY_MAX_ATTEMPTS:
                 message = (
                     f"LLM 分词 block {block_index or '?'} 第 {attempt} 次未匹配 / 比例 "
@@ -294,12 +354,18 @@ def _plan_boundary_text(
                 if progress:
                     progress(message, 0.53)
                 feedback = (
-                    f"Previous output had too many unusable slash boundaries: "
-                    f"{projection['skipped_count']} skipped out of {total_slashes} "
-                    f"({skipped_ratio:.1%}). Do not put / next to punctuation. "
-                    "Do not rewrite text. Insert / only at stable phrase boundaries that can be aligned back to the input."
+                    f"上一次输出有太多无法应用的 /：{projection['skipped_count']} / {total_slashes} "
+                    f"({skipped_ratio:.1%})。最常见错误是把 / 放在标点旁边。"
+                    "请记住：标点本身就是边界，不要在逗号、句号、问号、感叹号、分号、冒号前后插 /。"
+                    "只能在两个非标点字符之间插 /，并尽量保持原文不改写。"
                 )
                 continue
+            if skipped_ratio > BOUNDARY_RETRY_SKIPPED_RATIO and best_candidate is not None:
+                planned_text = str(best_candidate["planned_text"])
+                prompt = str(best_candidate["prompt"])
+                attempt = int(best_candidate["attempt"])
+                projection = dict(best_candidate["projection"])
+                skipped_ratio = float(best_candidate["skipped_ratio"])
             if debug_path:
                 _append_boundary_debug(
                     debug_path,
@@ -483,24 +549,34 @@ def _append_boundary_debug(
         "```",
         "",
     ]
-    with path.open("a", encoding="utf-8") as file:
-        file.write("\n".join(section))
-        file.write("\n")
+    with DEBUG_WRITE_LOCK:
+        with path.open("a", encoding="utf-8") as file:
+            file.write("\n".join(section))
+            file.write("\n")
 
 
 def _ask_boundary_llm(raw_text: str, max_chars: int, feedback: str = "") -> tuple[str, str]:
-    retry_note = f"\nValidation feedback: {feedback}\n" if feedback else ""
+    retry_note = f"\n上一次输出校验反馈：{feedback}\n请严格修正上述问题后再返回。\n" if feedback else ""
     prompt = f"""
 你是中文字幕分词和短语边界规划器。请在输入原文中只插入斜杠 / 作为词语或短语边界。
 
 硬性规则：
 1. 只能新增 /，不能删除、替换、改写、移动任何原文字或标点。
 2. 去掉所有 / 后，必须与输入原文逐字完全一致。
-3. / 不能紧贴标点，禁止“词 / ，”“词， / 下文”“词 / 。”这类格式。
-4. 保留原标点。不要把标点替换成 /。
-5. 在中文词语、专有名词、固定搭配、英文词、数字单位内部不要插入 /。
-6. 对长句插入足够多的 /，让本地程序可以在不拆词的情况下按 {max_chars} 字左右切成字幕。
-7. 只返回 JSON，不要解释。
+3. 标点本身就是边界。遇到 ，。？！；：,.!?;: 时，不需要也禁止插入 /。
+4. / 只能放在两个非标点字符之间，不能紧贴任何标点，禁止“词 / ，”“词， / 下文”“影响？ / 就大家”“现场， / 把它”。
+5. 保留原标点。不要把标点替换成 /，不要在标点前后补 /。
+6. 在中文词语、专有名词、固定搭配、英文词、数字单位内部不要插入 /。
+7. 对长句插入足够多的 /，让本地程序可以在不拆词的情况下按 {max_chars} 字左右切成字幕。
+8. 只返回 JSON，不要解释。
+
+反例与正确写法：
+- 错误：侦探片怎么影响？ / 就大家
+- 正确：侦探片怎么影响？就大家
+- 错误：这个现场， / 把它全部都三维建模了
+- 正确：这个现场，把它 / 全部都 / 三维建模了
+- 错误：行动的。 / 其实， / 在考古遗址
+- 正确：行动的。其实，在考古遗址
 
 输入原文：
 {raw_text}
@@ -511,19 +587,15 @@ def _ask_boundary_llm(raw_text: str, max_chars: int, feedback: str = "") -> tupl
 }}
 """
     prompt += f"""
-Hard validation rule:
-- Every unit between two "/" boundaries or strong punctuation marks must have <= {max_chars} non-punctuation, non-space characters.
-- If a unit is longer than {max_chars}, add more "/" at natural word or phrase boundaries.
-- Do not split inside short words such as 研究所, 大学, 化石, 二氧化碳, or English words.
-- For long organization names, split between semantic components, not inside the final word.
-Fine-grained planning rule:
-- Do not insert "/" only when a subtitle would be too long. Mark useful optional boundaries throughout the sentence.
-- Prefer natural phrase units of about 2-8 Chinese characters: subjects, predicates, objects, modifiers, proper nouns, verb-object phrases, prepositional phrases, and parallel phrases.
-- Keep complete words and named entities intact. "/" means a safe optional boundary, not a mandatory subtitle break.
-- Example input: 我主要从事人类演化研究，具体呢，我是做人类的行为与文化演化。
-- Good output: 我主要 / 从事 / 人类演化研究，具体呢，我是 / 做 / 人类的行为 / 与 / 文化演化。
-- Example input: 是从百万年里的尘埃里来寻找我们人类演化留下的片段性的故事。
-- Good output: 是从 / 百万年里的尘埃里 / 来寻找 / 我们人类演化 / 留下的 / 片段性的故事。
+细分规则：
+- 每个标点分隔出的内部单元，如果超过 {max_chars} 个非标点、非空白字符，要继续在自然词语或短语边界加入 /。
+- 不要只在超长时插 /；整句中都要标记有用的可选边界。
+- 优先形成约 2-8 个中文字符的自然短语：主语、谓语、宾语、修饰语、专有名词、动宾短语、介宾短语、并列短语。
+- 保持完整词语和命名实体。/ 表示安全的可选边界，不是强制字幕换行。
+- 示例输入：我主要从事人类演化研究，具体呢，我是做人类的行为与文化演化。
+- 好的输出：我主要 / 从事 / 人类演化研究，具体呢，我是 / 做 / 人类的行为 / 与 / 文化演化。
+- 示例输入：是从百万年里的尘埃里来寻找我们人类演化留下的片段性的故事。
+- 好的输出：是从 / 百万年里的尘埃里 / 来寻找 / 我们人类演化 / 留下的 / 片段性的故事。
 {retry_note}
 """
     response = ask_gpt(prompt, resp_type="json", log_title="subtitle_rag_boundary_plan")
@@ -800,6 +872,7 @@ def _stats_dict(stats: BoundaryStats) -> dict[str, Any]:
         "boundary_plan_fallback_used": stats.fallback_used,
         "boundary_plan_segment_count": stats.segment_count,
         "boundary_plan_retry_count": stats.retry_count,
+        "boundary_plan_max_workers": stats.max_workers,
         "boundary_plan_report": stats.report_path,
         "boundary_plan_llm": stats.llm_path,
         "boundary_plan_debug": stats.debug_path,

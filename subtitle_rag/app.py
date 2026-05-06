@@ -67,6 +67,7 @@ def main() -> None:
               <div><span>字幕长度</span><strong>{settings['max_chars']}</strong></div>
               <div><span>窗口</span><strong>{settings['window_seconds']}s</strong></div>
               <div><span>交叠</span><strong>{settings['overlap_seconds']}s</strong></div>
+              <div><span>LLM 并发</span><strong>{settings['max_concurrent_llm_tasks']}</strong></div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -132,10 +133,18 @@ def _settings_dialog(settings: dict[str, object]) -> None:
             llm_support_json = st.toggle("强制 JSON 输出", value=bool(settings["llm_support_json"]))
 
         st.markdown("#### 字幕")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         max_chars = c1.number_input("最大长度", min_value=1, max_value=80, value=int(settings["max_chars"]), step=1)
         window_seconds = c2.number_input("窗口秒数", min_value=30, max_value=7200, value=int(settings["window_seconds"]), step=30)
         overlap_seconds = c3.number_input("交叠秒数", min_value=0, max_value=600, value=int(settings["overlap_seconds"]), step=5)
+        max_concurrent_llm_tasks = c4.number_input(
+            "最大并发",
+            min_value=1,
+            max_value=16,
+            value=int(settings["max_concurrent_llm_tasks"]),
+            step=1,
+            help="用于 LLM 分词规划和 LLM 内容校对。当前模型支持 3 个并发任务时建议填 3。",
+        )
 
         save, cancel = st.columns(2)
         save_clicked = save.form_submit_button("保存", type="primary", use_container_width=True)
@@ -150,6 +159,7 @@ def _settings_dialog(settings: dict[str, object]) -> None:
             "subtitle_rag.max_chars": int(max_chars),
             "subtitle_rag.window_seconds": int(window_seconds),
             "subtitle_rag.overlap_seconds": int(overlap_seconds),
+            "subtitle_rag.max_concurrent_llm_tasks": int(max_concurrent_llm_tasks),
         }
         for key, value in updates.items():
             update_key(key, value)
@@ -186,7 +196,7 @@ def _run_job(media_file, glossary_files, reference_files, settings: dict[str, ob
         st.session_state[PROGRESS_LABEL_KEY] = display_label
         st.session_state[PROGRESS_VALUE_KEY] = float(value)
         status.write(display_label)
-        step_list.markdown(_progress_steps_markdown(progress_steps))
+        step_list.markdown(_progress_steps_markdown(progress_steps), unsafe_allow_html=True)
         progress_bar.progress(min(max(value, 0.0), 1.0))
 
     try:
@@ -197,6 +207,7 @@ def _run_job(media_file, glossary_files, reference_files, settings: dict[str, ob
             max_chars=int(settings["max_chars"]),
             window_seconds=float(settings["window_seconds"]),
             overlap_seconds=float(settings["overlap_seconds"]),
+            max_concurrent_llm_tasks=int(settings["max_concurrent_llm_tasks"]),
             progress=on_progress,
         )
     except SubtitleRagError as exc:
@@ -224,7 +235,6 @@ def _has_progress_state() -> bool:
 
 def _render_progress_panel(container):
     with container:
-        st.markdown('<div class="progress-card">', unsafe_allow_html=True)
         st.markdown('<div class="section-label">进度</div>', unsafe_allow_html=True)
         st.subheader("处理状态")
         value = float(st.session_state.get(PROGRESS_VALUE_KEY, 0.0) or 0.0)
@@ -238,7 +248,6 @@ def _render_progress_panel(container):
             step_list.markdown(_progress_steps_markdown(steps), unsafe_allow_html=True)
         elif st.session_state.get(RUNNING_STATE_KEY):
             step_list.markdown('<div class="progress-scroll"><div class="step-row"><span>...</span><p>任务正在运行</p></div></div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
         return progress_bar, status, step_list
 
 
@@ -251,6 +260,7 @@ def _load_settings() -> dict[str, object]:
         "max_chars": int(_safe_load_key("subtitle_rag.max_chars", 17)),
         "window_seconds": int(_safe_load_key("subtitle_rag.window_seconds", 600)),
         "overlap_seconds": int(_safe_load_key("subtitle_rag.overlap_seconds", 30)),
+        "max_concurrent_llm_tasks": int(_safe_load_key("subtitle_rag.max_concurrent_llm_tasks", 3)),
     }
 
 
@@ -494,7 +504,7 @@ def _inject_styles() -> None:
         [data-testid="column"] h3 { margin-top: 0; color: var(--ink); }
         .param-grid {
           display: grid;
-          grid-template-columns: repeat(3, 1fr);
+          grid-template-columns: repeat(4, 1fr);
           gap: 10px;
           margin: 8px 0 12px;
         }
@@ -565,16 +575,16 @@ def _inject_styles() -> None:
           background: linear-gradient(90deg, #10b981, #60a5fa);
         }
         .progress-card {
-          border: 1px solid var(--line);
-          border-radius: 8px;
-          background: rgba(15, 21, 32, .88);
-          padding: 14px;
+          display: none;
         }
         .progress-scroll {
           max-height: 260px;
           overflow-y: auto;
-          padding-right: 4px;
-          margin-top: 10px;
+          padding: 10px 14px;
+          margin-top: 14px;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: rgba(15, 21, 32, .88);
         }
         .step-row {
           display: grid;

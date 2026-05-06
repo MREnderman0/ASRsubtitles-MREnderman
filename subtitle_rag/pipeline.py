@@ -53,6 +53,7 @@ def process_media(
     max_chars: int | None = None,
     window_seconds: float | None = None,
     overlap_seconds: float | None = None,
+    max_concurrent_llm_tasks: int | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict[str, str]:
     glossary_paths = glossary_paths or []
@@ -60,6 +61,10 @@ def process_media(
     max_chars = max(int(max_chars if max_chars is not None else _config_default("subtitle_rag.max_chars", 17)), 1)
     window_seconds = max(float(window_seconds if window_seconds is not None else _config_default("subtitle_rag.window_seconds", 600)), 1.0)
     overlap_seconds = max(float(overlap_seconds if overlap_seconds is not None else _config_default("subtitle_rag.overlap_seconds", 30)), 0.0)
+    max_concurrent_llm_tasks = max(
+        int(max_concurrent_llm_tasks if max_concurrent_llm_tasks is not None else _config_default("subtitle_rag.max_concurrent_llm_tasks", 3)),
+        1,
+    )
 
     run_dir = RUNS_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +85,7 @@ def process_media(
         run_dir=run_dir,
         window_seconds=window_seconds,
         overlap_seconds=overlap_seconds,
+        max_workers=max_concurrent_llm_tasks,
         progress=progress,
     )
     if boundary_plan_stats.get("boundary_plan_fallback_used"):
@@ -107,6 +113,7 @@ def process_media(
         max_chars=max_chars,
         window_seconds=window_seconds,
         overlap_seconds=overlap_seconds,
+        max_workers=max_concurrent_llm_tasks,
         run_dir=run_dir,
         progress=progress,
     )
@@ -133,6 +140,7 @@ def process_media(
         glossary_count=len(glossary),
         reference_count=len(references),
         draft_srt=draft_srt,
+        max_concurrent_llm_tasks=max_concurrent_llm_tasks,
         **boundary_plan_stats,
         **patch_stats,
     )
@@ -165,6 +173,7 @@ def _plan_segments(
     run_dir: Path,
     window_seconds: float,
     overlap_seconds: float,
+    max_workers: int,
     progress: ProgressCallback | None,
 ) -> tuple[list[Segment], dict]:
     try:
@@ -174,6 +183,7 @@ def _plan_segments(
             run_dir=run_dir,
             window_seconds=window_seconds,
             overlap_seconds=overlap_seconds,
+            max_workers=max_workers,
             progress=progress,
         )
         if segments:

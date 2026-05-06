@@ -6,7 +6,7 @@
 
 - 本地上传音频或视频。
 - 复用 WhisperX 本地识别、Demucs 人声分离、词级时间戳和现有 LLM 配置。
-- 先生成 `draft.srt`，再按 20 分钟核心块加前后 30 秒交叠交给 LLM 审稿。
+- 先生成 `draft.srt`，再按配置的滑动窗口加交叠交给 LLM 审稿。
 - LLM 只返回需要修改的 patch，程序应用后生成 `final.srt`。
 - 输出待确认词、patch 报告和完整 zip。
 
@@ -62,6 +62,7 @@ result = process_media(
     glossary_paths=[],
     reference_paths=[],
     max_chars=17,
+    max_concurrent_llm_tasks=3,
     progress=progress,
 )
 
@@ -95,6 +96,7 @@ Agent 操作约定：
 - 输入文件可以放在任意位置，运行结果会归档到 `subtitle_rag\runs\<timestamp>\`。
 - `process_media()` 返回的 `final_srt` 是最终字幕；如果 LLM patch 失败，检查 `draft_srt`、`patch_report.csv` 和 `run_manifest.json`。
 - 字幕最大长度由 `max_chars` 控制，默认 17；LLM patch 应用阶段允许额外放宽 5 个非空白字符。
+- `max_concurrent_llm_tasks` 控制 LLM 分词规划和 LLM 内容校对的并发通道，默认 3；底层 ASR 和整个任务本身仍然一次只跑一个。
 - 如果只想检查环境，不要启动前端，可以运行下面的烟测。
 
 环境烟测：
@@ -145,6 +147,10 @@ subtitle_rag\runs\<timestamp>\
 - `demucs`
 - `whisper.runtime`
 - `model_dir`
+- `subtitle_rag.max_chars`
+- `subtitle_rag.window_seconds`
+- `subtitle_rag.overlap_seconds`
+- `subtitle_rag.max_concurrent_llm_tasks`
 
 当前 `model_dir` 是相对路径 `./_model_cache`，因此在本目录启动时会使用 `H:\ASR-MREnderman\_model_cache`。
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,7 @@ import torch
 from rich import print as rprint
 
 from core.utils import except_handler, load_key
+from core.utils.models import _2_QWEN_RAW_RESULTS
 
 
 _MODEL = None
@@ -71,6 +73,7 @@ def transcribe_audio_qwen3(raw_audio_file: str, vocal_audio_file: str, start: fl
         language=language,
         return_time_stamps=True,
     )[0]
+    _append_raw_result(result, raw_audio_file=raw_audio_file, vocal_audio_file=vocal_audio_file, start=start, end=end)
     words = _items_to_words(result.time_stamps, start=start, end=end)
     text = str(result.text or "").strip()
     if not text:
@@ -88,6 +91,42 @@ def transcribe_audio_qwen3(raw_audio_file: str, vocal_audio_file: str, start: fl
             }
         ],
     }
+
+
+def _append_raw_result(result: Any, raw_audio_file: str, vocal_audio_file: str, start: float, end: float) -> None:
+    path = Path(_2_QWEN_RAW_RESULTS)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "start": float(start),
+        "end": float(end),
+        "raw_audio_file": str(raw_audio_file),
+        "vocal_audio_file": str(vocal_audio_file),
+        "text": str(getattr(result, "text", "") or ""),
+        "time_stamps": _serialize_time_stamps(getattr(result, "time_stamps", None)),
+    }
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(payload, ensure_ascii=False))
+        file.write("\n")
+
+
+def _serialize_time_stamps(time_stamps: Any) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for item in list(getattr(time_stamps, "items", []) or []):
+        output.append(
+            {
+                "text": str(getattr(item, "text", "") or ""),
+                "start_time": _safe_float(getattr(item, "start_time", None)),
+                "end_time": _safe_float(getattr(item, "end_time", None)),
+            }
+        )
+    return output
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _items_to_words(time_stamps: Any, start: float, end: float) -> list[dict[str, Any]]:

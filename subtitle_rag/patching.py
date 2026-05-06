@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ PATCH_BLOCK_SECONDS = 600.0
 PATCH_OVERLAP_SECONDS = 30.0
 PATCH_LENGTH_EXTRA_CHARS = 5
 PATCH_STAGE = "content_review"
+PATCH_WRITE_LOCK = Lock()
 
 
 def review_and_apply_patches(
@@ -28,11 +31,13 @@ def review_and_apply_patches(
     run_dir: Path,
     window_seconds: float | None = None,
     overlap_seconds: float | None = None,
+    max_workers: int | None = None,
     progress=None,
 ) -> tuple[list[SubtitleItem], list[dict[str, Any]], dict[str, Any]]:
     patch_limit = int(max_chars) + PATCH_LENGTH_EXTRA_CHARS
     window_seconds = float(window_seconds or PATCH_BLOCK_SECONDS)
     overlap_seconds = float(overlap_seconds if overlap_seconds is not None else PATCH_OVERLAP_SECONDS)
+    max_workers = max(1, int(max_workers or 1))
     patches_path = run_dir / "llm_patches.json"
     report_path = run_dir / "patch_report.csv"
 
@@ -46,36 +51,35 @@ def review_and_apply_patches(
     patched = [_copy_item(item) for item in draft_items]
     blocks = _build_blocks(patched, window_seconds=window_seconds, overlap_seconds=overlap_seconds)
 
-    for block_index, block in enumerate(blocks, start=1):
-        if progress:
-            progress(f"LLM content review block {block_index}/{len(blocks)}", 0.88 + 0.08 * (block_index / max(len(blocks), 1)))
+    block_results = _review_patch_blocks(
+        patched=patched,
+        segments=segments,
+        rag_context=rag_context,
+        max_chars=max_chars,
+        patch_limit=patch_limit,
+        blocks=blocks,
+        max_workers=max_workers,
+        progress=progress,
+    )
 
-        block_items = _items_in_range(patched, block["input_start"], block["input_end"])
-        block_raw_text = _raw_text_for_range(segments, block["input_start"], block["input_end"])
-        if not block_items or not block_raw_text.strip():
-            continue
-
-        try:
-            response, prompt_text = _ask_patch_llm(
-                block=block,
-                items=block_items,
-                raw_text=block_raw_text,
-                rag_context=rag_context,
-                max_chars=max_chars,
-                patch_limit=patch_limit,
-            )
-        except Exception as exc:
+    for block_result in sorted(block_results, key=lambda item: float(item["block"]["core_start"]), reverse=True):
+        block = block_result["block"]
+        block_index = int(block_result["block_index"])
+        if block_result["status"] != "success":
             failed_blocks += 1
             report_rows.append(
                 _report_row(
                     status="llm_failed",
                     op="block",
                     indexes=[],
-                    message=str(exc),
+                    message=str(block_result["error"]),
                     block=block,
                 )
             )
             continue
+
+        response = block_result["response"]
+        prompt_text = str(block_result["prompt_text"])
 
         estimated_input_tokens += _estimate_tokens(prompt_text)
         estimated_output_tokens += _estimate_tokens(json.dumps(response, ensure_ascii=False))
@@ -133,23 +137,24 @@ def review_and_apply_patches(
             )
 
     patched = _renumber(patched)
-    patches_path.write_text(json.dumps(all_patch_payloads, ensure_ascii=False, indent=2), encoding="utf-8")
-    pd.DataFrame(
-        report_rows,
-        columns=[
-            "stage",
-            "status",
-            "op",
-            "indexes",
-            "old_text",
-            "new_text",
-            "message",
-            "core_start",
-            "core_end",
-            "input_start",
-            "input_end",
-        ],
-    ).to_csv(report_path, index=False, encoding="utf-8-sig")
+    with PATCH_WRITE_LOCK:
+        patches_path.write_text(json.dumps(all_patch_payloads, ensure_ascii=False, indent=2), encoding="utf-8")
+        pd.DataFrame(
+            report_rows,
+            columns=[
+                "stage",
+                "status",
+                "op",
+                "indexes",
+                "old_text",
+                "new_text",
+                "message",
+                "core_start",
+                "core_end",
+                "input_start",
+                "input_end",
+            ],
+        ).to_csv(report_path, index=False, encoding="utf-8-sig")
 
     stats = {
         "llm_patch_enabled": True,
@@ -159,6 +164,7 @@ def review_and_apply_patches(
         "patch_stage_count": 1,
         "patch_stages": [PATCH_STAGE],
         "patch_block_count": len(blocks),
+        "patch_max_workers": max_workers,
         "patch_applied_count": sum(1 for row in report_rows if row["status"] == "applied"),
         "patch_failed_count": sum(1 for row in report_rows if row["status"] != "applied"),
         "llm_failed_block_count": failed_blocks,
@@ -168,6 +174,72 @@ def review_and_apply_patches(
         "patch_report": str(report_path),
     }
     return patched, uncertain_terms, stats
+
+
+def _review_patch_blocks(
+    patched: list[SubtitleItem],
+    segments: list[CleanedSegment],
+    rag_context: RagContext,
+    max_chars: int,
+    patch_limit: int,
+    blocks: list[dict[str, float]],
+    max_workers: int,
+    progress,
+) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    for block_index, block in enumerate(blocks, start=1):
+        block_items = _items_in_range(patched, block["input_start"], block["input_end"])
+        block_raw_text = _raw_text_for_range(segments, block["input_start"], block["input_end"])
+        if block_items and block_raw_text.strip():
+            jobs.append(
+                {
+                    "block_index": block_index,
+                    "block": block,
+                    "items": block_items,
+                    "raw_text": block_raw_text,
+                }
+            )
+    if not jobs:
+        return []
+
+    results: list[dict[str, Any]] = []
+    completed = 0
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as executor:
+        futures = [
+            executor.submit(_review_patch_block, job, rag_context, max_chars, patch_limit)
+            for job in jobs
+        ]
+        for future in as_completed(futures):
+            completed += 1
+            result = future.result()
+            results.append(result)
+            if progress:
+                block_index = result["block_index"]
+                label = f"LLM content review block {block_index}/{len(blocks)}"
+                if result["status"] != "success":
+                    label = f"FAIL:LLM 内容校对分块 {block_index}/{len(blocks)} 失败：{result['error']}"
+                progress(label, 0.88 + 0.08 * (completed / max(len(jobs), 1)))
+    return sorted(results, key=lambda item: int(item["block_index"]))
+
+
+def _review_patch_block(
+    job: dict[str, Any],
+    rag_context: RagContext,
+    max_chars: int,
+    patch_limit: int,
+) -> dict[str, Any]:
+    try:
+        response, prompt_text = _ask_patch_llm(
+            block=job["block"],
+            items=job["items"],
+            raw_text=job["raw_text"],
+            rag_context=rag_context,
+            max_chars=max_chars,
+            patch_limit=patch_limit,
+        )
+        return {**job, "status": "success", "response": response, "prompt_text": prompt_text}
+    except Exception as exc:
+        return {**job, "status": "failed", "error": str(exc)}
 
 
 def _ask_patch_llm(
