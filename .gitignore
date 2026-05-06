@@ -1,0 +1,13 @@
+output/
+run_logs/
+subtitle_rag/runs/
+subtitle_rag/uploads/
+subtitle_rag/backup/
+_model_cache/
+.venv/
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+config.yaml
+temp_*.txt
+test_*.py
