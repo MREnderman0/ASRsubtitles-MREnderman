@@ -17,6 +17,7 @@ from core import _2_asr
 from core.utils.config_utils import load_key
 from core.utils.models import _2_CLEANED_CHUNKS
 from subtitle_rag.cleaning import CleanedSegment, Segment, deterministic_clean
+from subtitle_rag.global_analysis import analyze_global_transcript
 from subtitle_rag.patching import review_and_apply_patches
 from subtitle_rag.planning import plan_segments_from_words
 from subtitle_rag.parsers import read_glossary_files, read_reference_files
@@ -65,6 +66,7 @@ def process_media(
         int(max_concurrent_llm_tasks if max_concurrent_llm_tasks is not None else _config_default("subtitle_rag.max_concurrent_llm_tasks", 3)),
         1,
     )
+    global_analysis_enabled = bool(_config_default("subtitle_rag.global_analysis_enabled", True))
 
     run_dir = RUNS_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -77,6 +79,74 @@ def process_media(
 
     _progress(progress, "Loading word-level timestamps", 0.48)
     words = _load_word_rows(PROJECT_ROOT / _2_CLEANED_CHUNKS)
+
+    result = process_words(
+        words=words,
+        run_dir=run_dir,
+        input_path=Path(input_path),
+        prepared_media=prepared_media,
+        glossary_paths=glossary_paths,
+        reference_paths=reference_paths,
+        max_chars=max_chars,
+        window_seconds=window_seconds,
+        overlap_seconds=overlap_seconds,
+        max_concurrent_llm_tasks=max_concurrent_llm_tasks,
+        global_analysis_enabled=global_analysis_enabled,
+        progress=progress,
+    )
+    _archive_asr_outputs(run_dir)
+    zip_path = _write_result_zip(run_dir)
+    result["zip"] = zip_path
+    _progress(progress, "Done", 1.0)
+    return result
+
+
+def process_words(
+    words: pd.DataFrame,
+    run_dir: str | Path,
+    input_path: str | Path,
+    prepared_media: str | Path | None = None,
+    glossary_paths: list[str | Path] | None = None,
+    reference_paths: list[str | Path] | None = None,
+    max_chars: int | None = None,
+    window_seconds: float | None = None,
+    overlap_seconds: float | None = None,
+    max_concurrent_llm_tasks: int | None = None,
+    global_analysis_enabled: bool | None = None,
+    progress: ProgressCallback | None = None,
+) -> dict[str, str]:
+    glossary_paths = glossary_paths or []
+    reference_paths = reference_paths or []
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    max_chars = max(int(max_chars if max_chars is not None else _config_default("subtitle_rag.max_chars", 17)), 1)
+    window_seconds = max(float(window_seconds if window_seconds is not None else _config_default("subtitle_rag.window_seconds", 600)), 1.0)
+    overlap_seconds = max(float(overlap_seconds if overlap_seconds is not None else _config_default("subtitle_rag.overlap_seconds", 30)), 0.0)
+    max_concurrent_llm_tasks = max(
+        int(max_concurrent_llm_tasks if max_concurrent_llm_tasks is not None else _config_default("subtitle_rag.max_concurrent_llm_tasks", 3)),
+        1,
+    )
+    global_analysis_enabled = bool(
+        global_analysis_enabled if global_analysis_enabled is not None else _config_default("subtitle_rag.global_analysis_enabled", True)
+    )
+
+    _progress(progress, "Loading glossary and reference materials", 0.50)
+    glossary = read_glossary_files(glossary_paths)
+    references = read_reference_files(reference_paths)
+    rag_context = RagContext(glossary=glossary, references=references)
+
+    _progress(progress, "Analyzing full ASR transcript with LLM", 0.515)
+    rag_context, global_analysis_stats = analyze_global_transcript(
+        words=words,
+        rag_context=rag_context,
+        run_dir=run_dir,
+        enabled=global_analysis_enabled,
+    )
+    if global_analysis_stats.get("global_asr_analysis_success"):
+        _progress(progress, "LLM 全局转录诊断完成", 0.525)
+    elif global_analysis_stats.get("global_asr_analysis_enabled"):
+        detail = global_analysis_stats.get("global_asr_analysis_error", "unknown error")
+        _progress(progress, f"FAIL:LLM 全局转录诊断失败，已跳过（{detail}）", 0.525)
 
     _progress(progress, "Planning subtitle boundaries with LLM", 0.53)
     segments, boundary_plan_stats = _plan_segments(
@@ -93,11 +163,6 @@ def process_media(
         error = boundary_plan_stats.get("boundary_plan_error", "")
         detail = f"{failed} block(s) failed" if failed else str(error or "fallback used")
         _progress(progress, f"FAIL:LLM 规划字幕边界失败，已回退本地断句（{detail}）", 0.535)
-
-    _progress(progress, "Loading glossary and reference materials", 0.58)
-    glossary = read_glossary_files(glossary_paths)
-    references = read_reference_files(reference_paths)
-    rag_context = RagContext(glossary=glossary, references=references)
 
     _progress(progress, "Generating draft transcript", 0.70)
     cleaned = _draft_clean_segments(segments, rag_context)
@@ -141,13 +206,10 @@ def process_media(
         reference_count=len(references),
         draft_srt=draft_srt,
         max_concurrent_llm_tasks=max_concurrent_llm_tasks,
+        **global_analysis_stats,
         **boundary_plan_stats,
         **patch_stats,
     )
-    _archive_asr_outputs(run_dir)
-
-    zip_path = _write_result_zip(run_dir)
-    _progress(progress, "Done", 1.0)
 
     return {
         "run_dir": str(run_dir),
@@ -156,7 +218,8 @@ def process_media(
         "cleaned_subtitles": str(cleaned_xlsx),
         "uncertain_terms": str(uncertain_csv),
         "manifest": str(manifest_path),
-        "zip": zip_path,
+        "global_asr_analysis_md": str(run_dir / "global_asr_analysis.md"),
+        "global_asr_analysis_json": str(run_dir / "global_asr_analysis.json"),
     }
 
 

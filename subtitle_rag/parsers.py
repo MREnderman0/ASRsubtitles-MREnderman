@@ -115,11 +115,11 @@ def _read_glossary_frame(path: Path) -> pd.DataFrame:
     if path.suffix.lower() == ".csv":
         for encoding in ("utf-8-sig", "utf-8", "gbk"):
             try:
-                return pd.read_csv(path, encoding=encoding)
+                return pd.read_csv(path, encoding=encoding, header=None)
             except UnicodeDecodeError:
                 continue
-        return pd.read_csv(path, encoding="utf-8", encoding_errors="ignore")
-    return pd.read_excel(path)
+        return pd.read_csv(path, encoding="utf-8", encoding_errors="ignore", header=None)
+    return pd.read_excel(path, header=None)
 
 
 def read_glossary_files(paths: Iterable[str | Path]) -> list[GlossaryEntry]:
@@ -132,31 +132,9 @@ def read_glossary_files(paths: Iterable[str | Path]) -> list[GlossaryEntry]:
         if frame.empty:
             continue
 
-        lower_cols = {str(col).strip().lower(): col for col in frame.columns}
-        alias_col = (
-            lower_cols.get("alias")
-            or lower_cols.get("asr")
-            or lower_cols.get("wrong")
-            or lower_cols.get("term")
-            or lower_cols.get("术语")
-            or frame.columns[0]
-        )
-        canonical_col = (
-            lower_cols.get("canonical")
-            or lower_cols.get("correct")
-            or lower_cols.get("replacement")
-            or lower_cols.get("标准写法")
-            or lower_cols.get("正确写法")
-            or (frame.columns[1] if len(frame.columns) > 1 else alias_col)
-        )
-        note_col = (
-            lower_cols.get("note")
-            or lower_cols.get("notes")
-            or lower_cols.get("备注")
-            or (frame.columns[2] if len(frame.columns) > 2 else None)
-        )
+        start_row, alias_col, canonical_col, note_col = _glossary_columns(frame)
 
-        for _, row in frame.iterrows():
+        for _, row in frame.iloc[start_row:].iterrows():
             alias = str(row.get(alias_col, "")).strip()
             canonical = str(row.get(canonical_col, "")).strip() or alias
             note = str(row.get(note_col, "")).strip() if note_col else ""
@@ -164,3 +142,24 @@ def read_glossary_files(paths: Iterable[str | Path]) -> list[GlossaryEntry]:
                 entries.append(GlossaryEntry(alias=alias, canonical=canonical, note=note, source=path.name))
     return entries
 
+
+def _glossary_columns(frame: pd.DataFrame) -> tuple[int, object, object, object | None]:
+    alias_names = {"alias", "asr", "wrong", "term", "术语"}
+    canonical_names = {"canonical", "correct", "replacement", "标准写法", "正确写法"}
+    note_names = {"note", "notes", "备注"}
+    first_row = [str(value).strip().lower() for value in frame.iloc[0].tolist()] if not frame.empty else []
+
+    if any(value in alias_names | canonical_names | note_names for value in first_row):
+        column_by_name = {value: frame.columns[index] for index, value in enumerate(first_row)}
+        alias_col = next((column_by_name[name] for name in alias_names if name in column_by_name), frame.columns[0])
+        canonical_col = next(
+            (column_by_name[name] for name in canonical_names if name in column_by_name),
+            frame.columns[1] if len(frame.columns) > 1 else alias_col,
+        )
+        note_col = next((column_by_name[name] for name in note_names if name in column_by_name), None)
+        return 1, alias_col, canonical_col, note_col
+
+    alias_col = frame.columns[0]
+    canonical_col = frame.columns[1] if len(frame.columns) > 1 else alias_col
+    note_col = frame.columns[2] if len(frame.columns) > 2 else None
+    return 0, alias_col, canonical_col, note_col

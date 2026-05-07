@@ -9,6 +9,7 @@ ASR-MREnderman is a local subtitle generation workflow for audio and video files
 - 支持 WhisperX 本地识别，保留 Qwen3-ASR 作为可选后端。
 - 可使用 Demucs 做人声分离，提升复杂音频中的识别效果。
 - 通过 LLM 规划字幕短语边界，减少断词和不自然拆分。
+- 在内容校对前对完整 ASR 转录做一次全局诊断，生成主题、术语和疑似识别错误资料。
 - 生成 `draft.srt` 后再由 LLM 做内容校对。
 - 支持自定义词汇表，优先修正专业术语、人名、机构名和固定表达。
 - 支持参考资料上传，内容校对阶段会把参考资料完整提供给 LLM。
@@ -125,6 +126,7 @@ subtitle_rag:
   window_seconds: 600
   overlap_seconds: 30
   max_concurrent_llm_tasks: 3
+  global_analysis_enabled: true
 ```
 
 常用配置：
@@ -140,6 +142,7 @@ subtitle_rag:
 - `subtitle_rag.window_seconds`：LLM 分块核心窗口秒数。
 - `subtitle_rag.overlap_seconds`：LLM 分块交叠秒数。
 - `subtitle_rag.max_concurrent_llm_tasks`：LLM 分词和校对的最大并发数。
+- `subtitle_rag.global_analysis_enabled`：是否在内容校对前生成完整转录诊断资料，默认开启。
 
 ### 6. 准备本地模型
 
@@ -230,6 +233,8 @@ subtitle_rag/runs/<timestamp>/
 
 - `draft.srt`：本地规则和边界规划生成的初稿字幕。
 - `final.srt`：LLM 内容校对后的最终字幕。
+- `global_asr_analysis.md`：完整转录诊断资料，供人工和 agent 查看。
+- `global_asr_analysis.json`：完整转录诊断资料的机器可读版本。
 - `uncertain_terms.csv`：仍需人工确认的词和候选修正。
 - `llm_patches.json`：LLM 返回的 patch 原始记录。
 - `patch_report.csv`：patch 应用成功、失败和跳过原因。
@@ -322,6 +327,28 @@ result = process_media(
 )
 ```
 
+### 词汇表格式
+
+词汇表可以带表头，也可以不带表头。读取规则：
+
+- 如果第一行是 `alias/canonical/note`、`术语/正确写法/备注` 等表头，会自动跳过表头。
+- 如果第一行就是词条，会从第一行开始读取。
+- 默认第 1 列是 ASR 可能识别出的写法，第 2 列是推荐写法，第 3 列是备注。
+
+示例：
+
+```csv
+墨子沙龙,墨子沙龙
+杨诗霞,杨石霞
+```
+
+或：
+
+```csv
+alias,canonical,note
+莫子沙龙,墨子沙龙,品牌名
+```
+
 ### 只跑 ASR 检查
 
 用于检查 ASR 原始输出和词级时间戳，不进入 LLM 分词和校对：
@@ -332,12 +359,31 @@ result = process_media(
 
 输出会包含 `cleaned_chunks.xlsx` 和 Qwen 后端的 `qwen_raw_results.jsonl`。WhisperX 后端不会生成 Qwen raw 文件。
 
+### 从已有 ASR 结果重跑后半段
+
+如果已经有 `output/log/cleaned_chunks.xlsx`，可以跳过 ASR，只重跑全局诊断、LLM 分词、draft 生成和内容校对：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\rerun_from_last_asr.py --asr-xlsx output\log\cleaned_chunks.xlsx --input-path samples\input.mp4
+```
+
+可追加词汇表、参考资料和并发参数：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\rerun_from_last_asr.py `
+  --asr-xlsx output\log\cleaned_chunks.xlsx `
+  --input-path samples\input.mp4 `
+  --glossary samples\glossary.xlsx `
+  --reference samples\notes.docx `
+  --max-concurrent-llm-tasks 3
+```
+
 ## 开发检查
 
 语法检查：
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile subtitle_rag\app.py subtitle_rag\pipeline.py subtitle_rag\patching.py subtitle_rag\planning.py core\_2_asr.py core\asr_backend\whisperX_local.py
+.\.venv\Scripts\python.exe -m py_compile subtitle_rag\app.py subtitle_rag\pipeline.py subtitle_rag\global_analysis.py subtitle_rag\patching.py subtitle_rag\planning.py core\_2_asr.py core\asr_backend\whisperX_local.py scripts\rerun_from_last_asr.py
 ```
 
 当前主流程依赖共享的 `output/` 临时目录，因此不支持多个完整媒体任务同时运行。`subtitle_rag.max_concurrent_llm_tasks` 只控制单个任务内部的 LLM 分块并发。

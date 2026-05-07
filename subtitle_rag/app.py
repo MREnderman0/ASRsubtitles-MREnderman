@@ -286,8 +286,10 @@ def _progress_label(label: str) -> str:
         "Running local ASR word-level transcription": "本地 ASR 词级时间戳识别",
         "Running WhisperX word-level transcription": "本地 ASR 词级时间戳识别",
         "Loading word-level timestamps": "读取词级时间戳",
-        "Planning subtitle boundaries with LLM": "LLM 规划字幕边界",
         "Loading glossary and reference materials": "读取词汇表和参考资料",
+        "Analyzing full ASR transcript with LLM": "LLM 全局转录诊断",
+        "LLM 全局转录诊断完成": "LLM 全局转录诊断完成",
+        "Planning subtitle boundaries with LLM": "LLM 规划字幕边界",
         "Generating draft transcript": "生成初稿文本",
         "Generating draft SRT subtitles": "生成 draft.srt",
         "Reviewing draft with LLM patches": "LLM 校对字幕内容",
@@ -385,6 +387,12 @@ def _render_result_downloads(result: dict | None) -> None:
     patch_report = Path(result["run_dir"]) / "patch_report.csv"
     if patch_report.exists():
         downloads.append(("patch_report.csv", str(patch_report), "text/csv", "download_patch_report"))
+    global_analysis_md = Path(result["run_dir"]) / "global_asr_analysis.md"
+    if global_analysis_md.exists():
+        downloads.append(("global_asr_analysis.md", str(global_analysis_md), "text/markdown", "download_global_asr_analysis_md"))
+    global_analysis_json = Path(result["run_dir"]) / "global_asr_analysis.json"
+    if global_analysis_json.exists():
+        downloads.append(("global_asr_analysis.json", str(global_analysis_json), "application/json", "download_global_asr_analysis_json"))
 
     cols = st.columns(3)
     for idx, (label, path, mime, key) in enumerate(downloads):

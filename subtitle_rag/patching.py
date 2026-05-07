@@ -85,7 +85,7 @@ def review_and_apply_patches(
         estimated_output_tokens += _estimate_tokens(json.dumps(response, ensure_ascii=False))
 
         response = _strip_reason_fields(response)
-        all_patch_payloads.append({"stage": PATCH_STAGE, "block": block, "response": response})
+        all_patch_payloads.append({"stage": PATCH_STAGE, "block": block, "prompt_text": prompt_text, "response": response})
 
         pending_uncertain = [item for item in response.get("uncertain_terms", []) or [] if isinstance(item, dict)]
 

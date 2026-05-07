@@ -39,6 +39,7 @@ subtitle_rag:
   window_seconds: 600
   overlap_seconds: 30
   max_concurrent_llm_tasks: 3
+  global_analysis_enabled: true
 
 whisper:
   # ["large-v3", "large-v3-turbo"]. Note: for zh model will force to use Belle/large-v3
