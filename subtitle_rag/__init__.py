@@ -1,2 +1,1 @@
-"""Source-subtitle RAG extension for VideoLingo."""
-
+"""Source-subtitle RAG workflow for ASR-MREnderman."""

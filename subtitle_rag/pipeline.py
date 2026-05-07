@@ -289,8 +289,8 @@ def _run_asr() -> None:
     os.environ.setdefault("TERM", "xterm-256color")
     os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     os.environ["HF_HUB_DISABLE_XET"] = "1"
-    os.environ["VIDEOLINGO_KEEP_HF_ENDPOINT"] = "1"
-    os.environ["VIDEOLINGO_ASR_LOCAL_ONLY"] = "1"
+    os.environ["ASR_MRENDERMAN_KEEP_HF_ENDPOINT"] = "1"
+    os.environ["ASR_MRENDERMAN_ASR_LOCAL_ONLY"] = "1"
     _ensure_nltk_punkt_tab()
     try:
         _2_asr.transcribe()
@@ -308,7 +308,7 @@ def _run_asr() -> None:
         if error_type == "LocalEntryNotFoundError" or any(marker in message for marker in download_markers):
             raise SubtitleRagError(
                 "WhisperX 模型下载失败。本地没有 `_model_cache` 缓存，当前网络连接 HuggingFace/hf-mirror 时中断。"
-                "请切换网络后重试，或先在 VideoLingo 主项目中完成一次 WhisperX 模型下载。"
+                "请切换网络后重试，或先在本项目中完成一次 WhisperX 模型下载。"
             ) from exc
         raise
 

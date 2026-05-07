@@ -60,7 +60,7 @@ def check_hf_mirror():
 
 @except_handler("WhisperX processing error:")
 def transcribe_audio(raw_audio_file, vocal_audio_file, start, end):
-    if os.environ.get("VIDEOLINGO_KEEP_HF_ENDPOINT") and os.environ.get("HF_ENDPOINT"):
+    if os.environ.get("ASR_MRENDERMAN_KEEP_HF_ENDPOINT") and os.environ.get("HF_ENDPOINT"):
         rprint(f"[cyan]🚀 Using preset HuggingFace endpoint:[/cyan] {os.environ['HF_ENDPOINT']}")
     else:
         os.environ['HF_ENDPOINT'] = check_hf_mirror()
@@ -132,7 +132,7 @@ def transcribe_audio(raw_audio_file, vocal_audio_file, start, end):
     # -------------------------
     align_start_time = time.time()
     # Align timestamps using vocal audio
-    align_cache_only = bool(os.environ.get("VIDEOLINGO_ASR_LOCAL_ONLY"))
+    align_cache_only = bool(os.environ.get("ASR_MRENDERMAN_ASR_LOCAL_ONLY"))
     model_a, metadata = whisperx.load_align_model(
         language_code=result["language"],
         device=device,

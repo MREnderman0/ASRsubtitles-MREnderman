@@ -1,34 +1,206 @@
 # ASR-MREnderman
 
-从 VideoLingo 项目中摘出的本地字幕生成与 LLM 校对工具。这个目录可以独立运行，不走原项目的翻译和配音流程。
+ASR-MREnderman is a local subtitle generation workflow for audio and video files. It combines local ASR, word-level timestamps, LLM-assisted subtitle boundary planning, and LLM content review to produce clean source-language SRT subtitles.
 
 ## 功能
 
-- 本地上传音频或视频。
-- 复用 WhisperX 本地识别、Demucs 人声分离、词级时间戳和现有 LLM 配置。
-- 先生成 `draft.srt`，再按配置的滑动窗口加交叠交给 LLM 审稿。
-- 上传的参考资料会在内容校对阶段完整提供给 LLM，用于术语、人名、机构名和专业概念纠错。
-- LLM 只返回需要修改的 patch，程序应用后生成 `final.srt`。
-- 输出待确认词、patch 报告和完整 zip。
+- 上传本地音频或视频并生成原文字幕。
+- 使用本地 ASR 生成词级或字级时间戳。
+- 支持 WhisperX 本地识别，保留 Qwen3-ASR 作为可选后端。
+- 可使用 Demucs 做人声分离，提升复杂音频中的识别效果。
+- 通过 LLM 规划字幕短语边界，减少断词和不自然拆分。
+- 生成 `draft.srt` 后再由 LLM 做内容校对。
+- 支持自定义词汇表，优先修正专业术语、人名、机构名和固定表达。
+- 支持参考资料上传，内容校对阶段会把参考资料完整提供给 LLM。
+- 支持下载 `final.srt`、`draft.srt`、待确认词表、patch 报告和完整结果包。
+- 支持前端页面使用，也支持 agent 或脚本直接调用 Python API。
 
-## 目录
+## 安装配置环境
 
-- `subtitle_rag/`：前端和字幕处理主流程。
-- `core/`：从 VideoLingo 复制过来的 ASR、Demucs、LLM 调用和配置工具。
-- `_model_cache/`：已复制的 WhisperX / 对齐模型缓存。
-- `.venv/`：已复制的 Python 环境。
-- `config.yaml`：模型、WhisperX、Demucs、LLM API 配置。
-- `run_app.bat`：启动脚本。
+### 1. 准备 Python
 
-## 启动
+建议使用 Python 3.10 或 3.11。
 
-双击 `run_app.bat`，默认端口是 `8504`。
+### 2. 一键初始化
 
-也可以在 PowerShell 中运行：
+Windows：
 
 ```powershell
-Set-Location H:\ASR-MREnderman
+.\setup_env.bat
+```
+
+Linux/macOS：
+
+```bash
+python scripts/setup_environment.py
+```
+
+脚本会按需执行以下检查：
+
+- 如果没有 `.venv`，创建项目本地虚拟环境。
+- 如果缺少依赖，安装 `requirements.txt`。
+- 如果没有 `config.yaml`，从 `config.example.yaml` 复制。
+- 检查 `ffmpeg` 是否可用。
+- 检查项目 `_model_cache` 和全局 Hugging Face 缓存。
+- 缺少 WhisperX 模型时，优先下载到项目 `_model_cache`。
+- 默认不下载 Qwen3 模型；需要时添加 `--with-qwen`。
+
+常用参数：
+
+```powershell
+.\setup_env.bat --skip-models
+.\setup_env.bat --with-qwen
+.\setup_env.bat --force-install
+```
+
+### 3. 手动安装
+
+如果不使用一键脚本，也可以手动创建环境。
+
+Windows：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+```
+
+Linux/macOS：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+```
+
+Windows：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Linux/macOS：
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+如果只需要解析 PDF/DOCX 参考资料，相关依赖已经包含在 `requirements.txt` 中。
+
+### 4. 准备 FFmpeg
+
+项目需要 `ffmpeg` 处理音视频。确认命令可用：
+
+```powershell
+ffmpeg -version
+```
+
+### 5. 配置模型和 API
+
+复制配置模板：
+
+```powershell
+Copy-Item config.example.yaml config.yaml
+```
+
+Linux/macOS：
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+编辑 `config.yaml`：
+
+```yaml
+api:
+  key: "YOUR_API_KEY"
+  base_url: "YOUR_API_BASE_URL"
+  model: "YOUR_MODEL"
+  llm_support_json: false
+
+asr:
+  backend: "whisperx"
+
+subtitle_rag:
+  max_chars: 17
+  window_seconds: 600
+  overlap_seconds: 30
+  max_concurrent_llm_tasks: 3
+```
+
+常用配置：
+
+- `api.base_url`：LLM API 地址。
+- `api.key`：LLM API key。
+- `api.model`：内容校对和边界规划使用的模型。
+- `api.llm_support_json`：当前 API 是否支持 OpenAI JSON response format。
+- `asr.backend`：默认 `whisperx`，可改为 `qwen3`。
+- `demucs`：是否启用人声分离。
+- `model_dir`：本地模型缓存目录，默认 `./_model_cache`。
+- `subtitle_rag.max_chars`：单条字幕默认最大长度。
+- `subtitle_rag.window_seconds`：LLM 分块核心窗口秒数。
+- `subtitle_rag.overlap_seconds`：LLM 分块交叠秒数。
+- `subtitle_rag.max_concurrent_llm_tasks`：LLM 分词和校对的最大并发数。
+
+### 6. 准备本地模型
+
+默认 ASR 后端是 WhisperX。模型会使用 `model_dir` 指定的目录作为缓存目录。首次运行可能需要下载 WhisperX 模型和对齐模型。
+
+如果使用 Qwen3-ASR，请把模型放到 `config.yaml` 中配置的路径：
+
+```yaml
+asr:
+  backend: "qwen3"
+  qwen3:
+    model_path: "./_model_cache/Qwen3-ASR-1.7B"
+    forced_aligner_path: "./_model_cache/Qwen3-ForcedAligner-0.6B"
+```
+
+### 7. 环境烟测
+
+Windows：
+
+```powershell
+@'
+from core.utils.config_utils import load_key
+print("model_dir:", load_key("model_dir"))
+print("api_model:", load_key("api.model"))
+import streamlit, pandas, openpyxl, whisperx, pypdf, docx
+print("imports_ok")
+'@ | .\.venv\Scripts\python.exe -
+```
+
+Linux/macOS：
+
+```bash
+python - <<'PY'
+from core.utils.config_utils import load_key
+print("model_dir:", load_key("model_dir"))
+print("api_model:", load_key("api.model"))
+import streamlit, pandas, openpyxl, whisperx, pypdf, docx
+print("imports_ok")
+PY
+```
+
+## 如何使用
+
+### 前端启动
+
+Windows：
+
+```powershell
 .\run_app.bat 8504
+```
+
+或直接运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run subtitle_rag/app.py --server.port 8504
+```
+
+Linux/macOS：
+
+```bash
+streamlit run subtitle_rag/app.py --server.port 8504
 ```
 
 浏览器打开：
@@ -37,20 +209,51 @@ Set-Location H:\ASR-MREnderman
 http://localhost:8504/
 ```
 
-如果想使用 8503：
+### 前端操作
 
-```powershell
-.\run_app.bat 8503
+1. 上传音频或视频文件。
+2. 可选上传自定义词汇表，支持 `csv/xlsx/xls`。
+3. 可选上传参考资料，支持 `txt/md/srt/vtt/csv/xlsx/xls/pdf/docx`。
+4. 在设置中配置 LLM base URL、API key、模型、字幕长度、窗口时间和并发数。
+5. 点击开始生成字幕。
+6. 下载结果文件。
+
+### 输出文件
+
+每次任务会写入：
+
+```text
+subtitle_rag/runs/<timestamp>/
 ```
 
-## Agent 直接调用
+主要文件：
 
-如果不需要前端，agent 可以直接在项目根目录调用 `subtitle_rag.pipeline.process_media()`。必须从 `H:\ASR-MREnderman` 运行，确保 `config.yaml`、`output/` 和相对模型目录都指向当前项目。
+- `draft.srt`：本地规则和边界规划生成的初稿字幕。
+- `final.srt`：LLM 内容校对后的最终字幕。
+- `uncertain_terms.csv`：仍需人工确认的词和候选修正。
+- `llm_patches.json`：LLM 返回的 patch 原始记录。
+- `patch_report.csv`：patch 应用成功、失败和跳过原因。
+- `cleaned_subtitles.xlsx`：字幕表格。
+- `run_manifest.json`：本次任务参数和统计。
+- `subtitle_rag_result.zip`：完整结果包。
 
-最小示例：
+## Agent 调用说明
+
+不需要前端时，可以直接调用 `subtitle_rag.pipeline.process_media()`。
+
+要求：
+
+- 从项目根目录运行。
+- 确保 `config.yaml` 已存在。
+- 每次只运行一个任务；任务会清理并重建项目根目录下的 `output/`。
+- 输入文件可以放在任意位置。
+- 结果会写入 `subtitle_rag/runs/<timestamp>/`。
+
+### 最小调用
+
+Windows PowerShell：
 
 ```powershell
-Set-Location H:\ASR-MREnderman
 @'
 from pathlib import Path
 from subtitle_rag.pipeline import process_media
@@ -59,7 +262,7 @@ def progress(stage, value):
     print(f"{value:.0%} {stage}", flush=True)
 
 result = process_media(
-    input_path=Path(r"H:\path\to\input.mp4"),
+    input_path=Path("samples/input.mp4"),
     glossary_paths=[],
     reference_paths=[],
     max_chars=17,
@@ -72,91 +275,69 @@ for key, value in result.items():
 '@ | .\.venv\Scripts\python.exe -
 ```
 
-带词汇表和参考资料：
+Linux/macOS：
+
+```bash
+python - <<'PY'
+from pathlib import Path
+from subtitle_rag.pipeline import process_media
+
+def progress(stage, value):
+    print(f"{value:.0%} {stage}", flush=True)
+
+result = process_media(
+    input_path=Path("samples/input.mp4"),
+    glossary_paths=[],
+    reference_paths=[],
+    max_chars=17,
+    max_concurrent_llm_tasks=3,
+    progress=progress,
+)
+
+for key, value in result.items():
+    print(f"{key}: {value}")
+PY
+```
+
+### 带词汇表和参考资料
 
 ```python
+from subtitle_rag.pipeline import process_media
+
 result = process_media(
-    input_path=r"H:\path\to\input.mp4",
+    input_path="samples/input.mp4",
     glossary_paths=[
-        r"H:\path\to\glossary.xlsx",
-        r"H:\path\to\terms.csv",
+        "samples/glossary.xlsx",
+        "samples/terms.csv",
     ],
     reference_paths=[
-        r"H:\path\to\reference.pdf",
-        r"H:\path\to\notes.docx",
-        r"H:\path\to\script.txt",
+        "samples/reference.pdf",
+        "samples/notes.docx",
+        "samples/script.txt",
     ],
     max_chars=17,
+    window_seconds=600,
+    overlap_seconds=30,
+    max_concurrent_llm_tasks=3,
 )
 ```
 
-Agent 操作约定：
+### 只跑 ASR 检查
 
-- 优先使用 `.\.venv\Scripts\python.exe`，不要误用系统 Python。
-- 每次只跑一个任务；底层会清理并重建项目根目录下的 `output/`，不支持并发。
-- 输入文件可以放在任意位置，运行结果会归档到 `subtitle_rag\runs\<timestamp>\`。
-- `process_media()` 返回的 `final_srt` 是最终字幕；如果 LLM patch 失败，检查 `draft_srt`、`patch_report.csv` 和 `run_manifest.json`。
-- 字幕最大长度由 `max_chars` 控制，默认 17；LLM patch 应用阶段允许额外放宽 5 个非空白字符。
-- `max_concurrent_llm_tasks` 控制 LLM 分词规划和 LLM 内容校对的并发通道，默认 3；底层 ASR 和整个任务本身仍然一次只跑一个。
-- 如果只想检查环境，不要启动前端，可以运行下面的烟测。
-
-环境烟测：
+用于检查 ASR 原始输出和词级时间戳，不进入 LLM 分词和校对：
 
 ```powershell
-Set-Location H:\ASR-MREnderman
-@'
-from core.utils.config_utils import load_key
-print("model_dir:", load_key("model_dir"))
-print("api_model:", load_key("api.model"))
-import streamlit, pandas, openpyxl, whisperx, pypdf, docx
-print("imports_ok")
-'@ | .\.venv\Scripts\python.exe -
+.\.venv\Scripts\python.exe scripts\run_asr_only.py samples\input.mp4
 ```
 
-代码编译检查：
+输出会包含 `cleaned_chunks.xlsx` 和 Qwen 后端的 `qwen_raw_results.jsonl`。WhisperX 后端不会生成 Qwen raw 文件。
+
+## 开发检查
+
+语法检查：
 
 ```powershell
-Set-Location H:\ASR-MREnderman
-.\.venv\Scripts\python.exe -m py_compile subtitle_rag\app.py subtitle_rag\pipeline.py subtitle_rag\patching.py subtitle_rag\subtitle.py core\_2_asr.py core\asr_backend\whisperX_local.py
+.\.venv\Scripts\python.exe -m py_compile subtitle_rag\app.py subtitle_rag\pipeline.py subtitle_rag\patching.py subtitle_rag\planning.py core\_2_asr.py core\asr_backend\whisperX_local.py
 ```
 
-## 输出
-
-每次任务会写入：
-
-```text
-subtitle_rag\runs\<timestamp>\
-```
-
-主要文件：
-
-- `draft.srt`：本地规则生成的初稿字幕。
-- `final.srt`：LLM patch 校对后的最终字幕。
-- `uncertain_terms.csv`：仍需人工确认或由 suggested_text 替换过的词。
-- `llm_patches.json`：LLM 返回的补丁原始记录。
-- `patch_report.csv`：patch 应用成功、失败和跳过原因。
-- `cleaned_subtitles.xlsx`：最终字幕表格。
-- `run_manifest.json`：本次任务参数和统计。
-
-## 配置
-
-常用配置在 `config.yaml`：
-
-- `api.base_url`
-- `api.model`
-- `api.key`
-- `demucs`
-- `whisper.runtime`
-- `model_dir`
-- `subtitle_rag.max_chars`
-- `subtitle_rag.window_seconds`
-- `subtitle_rag.overlap_seconds`
-- `subtitle_rag.max_concurrent_llm_tasks`
-
-当前 `model_dir` 是相对路径 `./_model_cache`，因此在本目录启动时会使用 `H:\ASR-MREnderman\_model_cache`。
-
-## 说明
-
-- 首版仍保留 VideoLingo 的 `core/` 模块作为共享轮子，避免重写 WhisperX、Demucs 和 LLM 调用。
-- `output/` 是 ASR 临时工作区，每次处理会清理并重建。
-- 不支持多个任务并发处理，因为底层临时目录仍是共享的 `output/`。
+当前主流程依赖共享的 `output/` 临时目录，因此不支持多个完整媒体任务同时运行。`subtitle_rag.max_concurrent_llm_tasks` 只控制单个任务内部的 LLM 分块并发。

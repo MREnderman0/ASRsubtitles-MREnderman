@@ -20,8 +20,8 @@ os.environ.setdefault("RICH_NO_LEGACY_WINDOWS", "1")
 os.environ.setdefault("TERM", "xterm-256color")
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ["HF_HUB_DISABLE_XET"] = "1"
-os.environ["VIDEOLINGO_KEEP_HF_ENDPOINT"] = "1"
-os.environ["VIDEOLINGO_ASR_LOCAL_ONLY"] = "1"
+os.environ["ASR_MRENDERMAN_KEEP_HF_ENDPOINT"] = "1"
+os.environ["ASR_MRENDERMAN_ASR_LOCAL_ONLY"] = "1"
 
 from core import _2_asr
 from core.utils.models import _2_CLEANED_CHUNKS, _2_QWEN_RAW_RESULTS
