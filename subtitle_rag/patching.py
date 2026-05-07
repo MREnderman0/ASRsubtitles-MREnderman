@@ -12,7 +12,7 @@ import pandas as pd
 
 from core.utils.ask_gpt import ask_gpt
 from subtitle_rag.cleaning import CleanedSegment
-from subtitle_rag.rag import RagContext, glossary_prompt, reference_snippets
+from subtitle_rag.rag import RagContext, glossary_prompt
 from subtitle_rag.subtitle import SubtitleItem, display_len, sanitize_subtitle_text, split_text
 
 
@@ -259,7 +259,7 @@ def _ask_patch_llm(
         }
         for item in items
     ]
-    refs = reference_snippets(raw_text, rag_context.references, limit=6)
+    refs = _all_reference_texts(rag_context)
     prompt = f"""
 你是中文原文字幕内容校对器。请审查 draft_srt 中明确需要修改的内容问题，只返回补丁；不要返回无问题字幕，不要返回 reason 或解释。
 
@@ -326,6 +326,15 @@ draft_srt_items:
     if not isinstance(response, dict):
         return {"patches": [], "uncertain_terms": []}, prompt
     return response, prompt
+
+
+def _all_reference_texts(rag_context: RagContext) -> list[str]:
+    snippets: list[str] = []
+    for doc in rag_context.references:
+        text = str(doc.text or "").strip()
+        if text:
+            snippets.append(f"[{doc.name}]\n{text}")
+    return snippets
 
 
 def _strip_reason_fields(response: dict[str, Any]) -> dict[str, Any]:
