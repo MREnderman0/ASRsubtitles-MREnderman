@@ -12,3 +12,4 @@ config.yaml
 temp_*.txt
 test_*.py
 ASR-MREnderman_source_backup_*.zip
+AGENTS.md
