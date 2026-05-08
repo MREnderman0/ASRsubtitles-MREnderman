@@ -22,7 +22,9 @@ BOUNDARY_BLOCK_SECONDS = 600.0
 BOUNDARY_OVERLAP_SECONDS = 30.0
 BOUNDARY_MAX_ATTEMPTS = 3
 BOUNDARY_RETRY_SKIPPED_RATIO = 0.10
+SHORT_TAIL_CHARS = 5
 STRONG_PUNCTUATION = "，。？！,?!"
+SHORT_TAIL_CROSSABLE_PUNCTUATION = "，,"
 ALL_PUNCTUATION = "，。？！；：、,.!?;:《》〈〉“”‘’\"'（）()【】[]{}—…-"
 SLASH = "/"
 ProgressCallback = Any
@@ -747,24 +749,110 @@ def _split_candidate_by_slashes(candidate: dict[str, Any], max_chars: int) -> li
     planned_text = str(candidate["planned_text"])
     tokens = list(candidate["tokens"])
     groups = _slash_groups(planned_text, tokens)
-    chunks: list[list[dict[str, Any]]] = []
+    group_chunks: list[list[list[dict[str, Any]]]] = []
     current: list[list[dict[str, Any]]] = []
     for group in groups:
         trial = [*current, group]
         if _groups_len(trial) <= max_chars or not current:
             current = trial
             continue
-        chunks.append(_flatten_groups(current))
+        group_chunks.append(current)
         current = [group]
     if current:
-        chunks.append(_flatten_groups(current))
+        group_chunks.append(current)
+    group_chunks = _balance_short_tail_group_chunks(group_chunks, max_chars=max_chars)
+
     output: list[list[dict[str, Any]]] = []
-    for chunk in chunks:
+    for group_chunk in group_chunks:
+        chunk = _flatten_groups(group_chunk)
         if _tokens_len(chunk) <= max_chars:
             output.append(chunk)
         else:
             output.extend(_hard_split_tokens(chunk, max_chars=max_chars))
     return output
+
+
+def _balance_short_tail_group_chunks(
+    chunks: list[list[list[dict[str, Any]]]],
+    max_chars: int,
+) -> list[list[list[dict[str, Any]]]]:
+    if len(chunks) < 2:
+        return chunks
+
+    balanced = [list(chunk) for chunk in chunks]
+    idx = len(balanced) - 1
+    while idx > 0:
+        current_len = _groups_len(balanced[idx])
+        previous = balanced[idx - 1]
+        if current_len == 0 or current_len > SHORT_TAIL_CHARS or not previous:
+            idx -= 1
+            continue
+
+        moved = _move_groups_to_short_tail(previous, balanced[idx], max_chars=max_chars, allow_punctuation=False)
+        if moved:
+            balanced[idx] = moved
+        elif current_len <= SHORT_TAIL_CHARS:
+            moved = _move_groups_to_short_tail(previous, balanced[idx], max_chars=max_chars, allow_punctuation=True)
+            if moved:
+                balanced[idx] = moved
+
+        if not previous:
+            merged = balanced[idx - 1] + balanced[idx]
+            if _groups_len(merged) <= max_chars:
+                balanced[idx - 1] = merged
+                balanced.pop(idx)
+                idx = min(idx, len(balanced) - 1)
+                continue
+
+        if moved:
+            idx = min(idx, len(balanced) - 1)
+        else:
+            idx -= 1
+
+    return [chunk for chunk in balanced if chunk]
+
+
+def _move_groups_to_short_tail(
+    previous: list[list[dict[str, Any]]],
+    current: list[list[dict[str, Any]]],
+    max_chars: int,
+    allow_punctuation: bool,
+) -> list[list[dict[str, Any]]] | None:
+    moved = False
+    updated_current = list(current)
+    while previous:
+        candidate_group = previous[-1]
+        punctuation = _group_strong_punctuation(candidate_group) or _groups_leading_strong_punctuation(updated_current)
+        crosses_punctuation = bool(punctuation)
+        if crosses_punctuation and (not allow_punctuation or punctuation not in SHORT_TAIL_CROSSABLE_PUNCTUATION):
+            break
+        trial_current = [candidate_group, *updated_current]
+        if _groups_len(trial_current) > max_chars:
+            break
+        previous.pop()
+        updated_current = trial_current
+        moved = True
+        if _groups_len(updated_current) > SHORT_TAIL_CHARS:
+            break
+    return updated_current if moved else None
+
+
+def _group_strong_punctuation(group: list[dict[str, Any]]) -> str:
+    for token in group:
+        text = str(token.get("text", ""))
+        if text in STRONG_PUNCTUATION:
+            return text
+    return ""
+
+
+def _groups_leading_strong_punctuation(groups: list[list[dict[str, Any]]]) -> str:
+    for group in groups:
+        for token in group:
+            text = str(token.get("text", ""))
+            if not text.strip() and text not in STRONG_PUNCTUATION:
+                continue
+            return text if text in STRONG_PUNCTUATION else ""
+    return ""
 
 
 def _slash_groups(planned_text: str, tokens: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:

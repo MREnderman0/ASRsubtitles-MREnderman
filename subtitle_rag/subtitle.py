@@ -17,6 +17,8 @@ class SubtitleItem:
 
 
 PUNCTUATION = "，。！？；：、,.!?;:"
+SENTENCE_PUNCTUATION = "。！？；.!?;"
+COMMA_PUNCTUATION = "，,、"
 SOFT_BREAKS = ("但是", "所以", "因为", "如果", "然后", "以及", "并且", "或者", "同时", "而且")
 PROTECTED_PHRASES = (
     "罗伯特波伊尔",
@@ -123,7 +125,7 @@ def _normalize_subtitle_text(text: str) -> str:
 
 
 def _sentence_chunks(text: str) -> list[str]:
-    chunks = re.split(f"(?<=[{re.escape(PUNCTUATION)}])", text)
+    chunks = re.split(f"(?<=[{re.escape(SENTENCE_PUNCTUATION)}])", text)
     return [chunk.strip() for chunk in chunks if chunk.strip()]
 
 
@@ -174,6 +176,8 @@ def _valid_split(
 ) -> bool:
     if _inside_protected_phrase(text, split_at, protected_phrases):
         return False
+    if _is_bad_comma_split(text, split_at):
+        return False
 
     left_len = display_len(sanitize_subtitle_text(text[:split_at]))
     right_len = display_len(sanitize_subtitle_text(text[split_at:]))
@@ -186,6 +190,35 @@ def _valid_split(
     if allow_short_tail:
         return True
     return right_len > SHORT_TAIL_CHARS or right_len > max_chars
+
+
+def _is_bad_comma_split(text: str, split_at: int) -> bool:
+    left = text[:split_at]
+    right = text[split_at:]
+    comma = ""
+    if left[-1:] in COMMA_PUNCTUATION:
+        comma = left[-1:]
+    elif right[:1] in COMMA_PUNCTUATION:
+        comma = right[:1]
+    if not comma:
+        return False
+
+    left_part = left.rstrip(COMMA_PUNCTUATION + " ")
+    right_part = right.lstrip(COMMA_PUNCTUATION + " ")
+    left_len = _nearest_clause_len(left_part, from_right=True)
+    right_len = _nearest_clause_len(right_part, from_right=False)
+    return left_len <= SHORT_TAIL_CHARS or right_len <= SHORT_TAIL_CHARS
+
+
+def _nearest_clause_len(text: str, from_right: bool) -> int:
+    separators = SENTENCE_PUNCTUATION + COMMA_PUNCTUATION
+    if from_right:
+        parts = re.split(f"[{re.escape(separators)}]", text)
+        target = parts[-1] if parts else text
+    else:
+        parts = re.split(f"[{re.escape(separators)}]", text)
+        target = parts[0] if parts else text
+    return display_len(sanitize_subtitle_text(target))
 
 
 def _split_score(text: str, split_at: int, protected_phrases: list[str]) -> float:
