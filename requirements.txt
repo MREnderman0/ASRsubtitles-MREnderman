@@ -5,7 +5,6 @@ pandas>=2.2.3
 pydub==0.25.1
 requests==2.32.5
 streamlit==1.49.1
-yt-dlp
 json-repair
 ruamel.yaml
 rich

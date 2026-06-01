@@ -1,6 +1,6 @@
 import os
 import glob
-from core._1_ytdlp import find_video_files
+from core.media_files import find_video_files
 import shutil
 
 def cleanup(history_dir="history"):
