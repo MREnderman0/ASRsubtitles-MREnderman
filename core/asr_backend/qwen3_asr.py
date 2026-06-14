@@ -7,6 +7,7 @@ from typing import Any
 import torch
 from rich import print as rprint
 
+from core.resource_limits import choose_device, configure_torch_runtime
 from core.utils import except_handler, load_key
 from core.utils.models import _2_QWEN_RAW_RESULTS
 
@@ -41,7 +42,8 @@ def _load_model():
     if not aligner_path.exists():
         raise FileNotFoundError(f"Qwen3 forced aligner directory not found: {aligner_path}")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    configure_torch_runtime(torch)
+    device = choose_device("resource_limits.qwen3.device", torch_module=torch)
     dtype = torch.float16 if device == "cuda" else torch.float32
     batch_size = int(load_key("asr.qwen3.max_inference_batch_size") or 1)
     max_new_tokens = int(load_key("asr.qwen3.max_new_tokens") or 512)

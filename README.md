@@ -121,6 +121,18 @@ api:
 asr:
   backend: "whisperx"
 
+resource_limits:
+  device: "auto"
+  cuda_memory_fraction: 0.75
+  torch_num_threads: 4
+  whisperx:
+    batch_size: 4
+    compute_type: "int8"
+    align_on_cpu: false
+  demucs:
+    device: "auto"
+    segment: 0
+
 subtitle_rag:
   max_chars: 17
   window_seconds: 600
@@ -137,12 +149,31 @@ subtitle_rag:
 - `api.llm_support_json`：当前 API 是否支持 OpenAI JSON response format。
 - `asr.backend`：默认 `whisperx`，可改为 `qwen3`。
 - `demucs`：是否启用人声分离。
+- `resource_limits.device`：全局设备选择，支持 `auto`、`cuda`、`cpu`；设为 `cpu` 可默认避免使用显卡。
+- `resource_limits.cuda_memory_fraction`：限制当前 Python 进程可向 PyTorch 申请的 CUDA 显存比例，例如 `0.5` 或 `0.75`。
+- `resource_limits.torch_num_threads`：限制 PyTorch CPU 线程数；`0` 表示由 PyTorch 自行决定。
+- `resource_limits.whisperx.batch_size`：WhisperX 推理批大小，调小可以降低显存占用。
+- `resource_limits.whisperx.compute_type`：WhisperX 计算类型；`int8` 更省显存，`float16` 通常更快但更吃显存。
+- `resource_limits.whisperx.align_on_cpu`：设为 `true` 时，WhisperX 对齐阶段在 CPU 上运行。
+- `resource_limits.demucs.device`：Demucs 人声分离设备；设为 `cpu` 可避免人声分离占用显卡。
+- `resource_limits.demucs.segment`：Demucs 分段处理秒数；`0` 表示使用模型默认值，通常最稳。
 - `model_dir`：本地模型缓存目录，默认 `./_model_cache`。
 - `subtitle_rag.max_chars`：单条字幕默认最大长度。
 - `subtitle_rag.window_seconds`：LLM 分块核心窗口秒数。
 - `subtitle_rag.overlap_seconds`：LLM 分块交叠秒数。
 - `subtitle_rag.max_concurrent_llm_tasks`：LLM 分词和校对的最大并发数。
 - `subtitle_rag.global_analysis_enabled`：是否在内容校对前生成完整转录诊断资料，默认开启。
+
+资源预设可以在前端设置中选择，也可以手动写入 `config.yaml`：
+
+- `满载计算`：更偏速度，GPU 余量较少。
+- `75% 算力`：默认推荐，保留一部分显存和系统余量。
+- `50% 算力`：显著降低峰值显存，适合同时做其他事。
+- `低占用`：尽量少占用显卡和 CPU，速度更慢。
+- `CPU-only`：完全避开 GPU，最稳但最慢。
+
+如果希望完全不使用显卡，把 `resource_limits.device` 和 `resource_limits.demucs.device` 都设为 `cpu`。
+Demucs 的 `segment` 默认建议保持 `0`，让模型使用自己的默认分段；部分音频在自定义分段长度下会触发内部 shape 错误。
 
 ### 6. 准备本地模型
 

@@ -32,6 +32,13 @@ import whisperx
 from whisperx.audio import load_audio as _whisperx_load_audio, SAMPLE_RATE as _WHISPERX_SR
 from rich import print as rprint
 from core.utils import *
+from core.resource_limits import (
+    choose_device,
+    config_bool,
+    configure_torch_runtime,
+    whisperx_batch_size,
+    whisperx_compute_type,
+)
 MODEL_DIR = load_key("model_dir")
 
 @except_handler("failed to check hf mirror", default_return=None)
@@ -65,17 +72,16 @@ def transcribe_audio(raw_audio_file, vocal_audio_file, start, end):
     else:
         os.environ['HF_ENDPOINT'] = check_hf_mirror()
     WHISPER_LANGUAGE = load_key("whisper.language")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    configure_torch_runtime(torch)
+    device = choose_device("resource_limits.whisperx.device", torch_module=torch)
     rprint(f"🚀 Starting WhisperX using device: {device} ...")
-    
+    batch_size = whisperx_batch_size(device)
+    compute_type = whisperx_compute_type(device, torch)
+
     if device == "cuda":
         gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        batch_size = 16 if gpu_mem > 8 else 2
-        compute_type = "float16" if torch.cuda.is_bf16_supported() else "int8"
         rprint(f"[cyan]🎮 GPU memory:[/cyan] {gpu_mem:.2f} GB, [cyan]📦 Batch size:[/cyan] {batch_size}, [cyan]⚙️ Compute type:[/cyan] {compute_type}")
     else:
-        batch_size = 1
-        compute_type = "int8"
         rprint(f"[cyan]📦 Batch size:[/cyan] {batch_size}, [cyan]⚙️ Compute type:[/cyan] {compute_type}")
     rprint(f"[green]▶️ Starting WhisperX for segment {start:.2f}s to {end:.2f}s...[/green]")
     
@@ -120,7 +126,8 @@ def transcribe_audio(raw_audio_file, vocal_audio_file, start, end):
 
     # Free GPU resources
     del model
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # Save language
     update_key("whisper.language", result['language'])
@@ -133,18 +140,20 @@ def transcribe_audio(raw_audio_file, vocal_audio_file, start, end):
     align_start_time = time.time()
     # Align timestamps using vocal audio
     align_cache_only = bool(os.environ.get("ASR_MRENDERMAN_ASR_LOCAL_ONLY"))
+    align_device = "cpu" if config_bool("resource_limits.whisperx.align_on_cpu", False) else device
     model_a, metadata = whisperx.load_align_model(
         language_code=result["language"],
-        device=device,
+        device=align_device,
         model_dir=MODEL_DIR,
         model_cache_only=align_cache_only,
     )
-    result = whisperx.align(result["segments"], model_a, metadata, vocal_audio_segment, device, return_char_alignments=False)
+    result = whisperx.align(result["segments"], model_a, metadata, vocal_audio_segment, align_device, return_char_alignments=False)
     align_time = time.time() - align_start_time
     rprint(f"[cyan]⏱️ time align:[/cyan] {align_time:.2f}s")
 
     # Free GPU resources again
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     del model_a
 
     # Adjust timestamps

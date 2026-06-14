@@ -27,6 +27,63 @@ PROGRESS_STEPS_KEY = "subtitle_rag_progress_steps"
 PROGRESS_LABEL_KEY = "subtitle_rag_progress_label"
 PROGRESS_VALUE_KEY = "subtitle_rag_progress_value"
 RUNNING_STATE_KEY = "subtitle_rag_running"
+RESOURCE_PRESETS = {
+    "满载计算": {
+        "description": "尽量使用 GPU，适合机器空闲时追求速度。",
+        "resource_device": "auto",
+        "cuda_memory_fraction": 0.95,
+        "torch_num_threads": 0,
+        "whisperx_batch_size": 8,
+        "whisperx_compute_type": "float16",
+        "whisperx_align_on_cpu": False,
+        "demucs_device": "auto",
+        "demucs_segment": 0,
+    },
+    "75% 算力": {
+        "description": "默认推荐，保留一部分显存和系统余量。",
+        "resource_device": "auto",
+        "cuda_memory_fraction": 0.75,
+        "torch_num_threads": 4,
+        "whisperx_batch_size": 4,
+        "whisperx_compute_type": "int8",
+        "whisperx_align_on_cpu": False,
+        "demucs_device": "auto",
+        "demucs_segment": 0,
+    },
+    "50% 算力": {
+        "description": "降低峰值显存，适合边跑字幕边做其他事。",
+        "resource_device": "auto",
+        "cuda_memory_fraction": 0.50,
+        "torch_num_threads": 4,
+        "whisperx_batch_size": 2,
+        "whisperx_compute_type": "int8",
+        "whisperx_align_on_cpu": True,
+        "demucs_device": "cpu",
+        "demucs_segment": 0,
+    },
+    "低占用": {
+        "description": "尽量少占用显卡和 CPU，速度会更慢。",
+        "resource_device": "auto",
+        "cuda_memory_fraction": 0.35,
+        "torch_num_threads": 2,
+        "whisperx_batch_size": 1,
+        "whisperx_compute_type": "int8",
+        "whisperx_align_on_cpu": True,
+        "demucs_device": "cpu",
+        "demucs_segment": 0,
+    },
+    "CPU-only": {
+        "description": "完全避开 GPU，最稳但最慢。",
+        "resource_device": "cpu",
+        "cuda_memory_fraction": 0.0,
+        "torch_num_threads": 4,
+        "whisperx_batch_size": 1,
+        "whisperx_compute_type": "int8",
+        "whisperx_align_on_cpu": True,
+        "demucs_device": "cpu",
+        "demucs_segment": 0,
+    },
+}
 
 
 def main() -> None:
@@ -146,6 +203,45 @@ def _settings_dialog(settings: dict[str, object]) -> None:
             help="用于 LLM 分词规划和 LLM 内容校对。当前模型支持 3 个并发任务时建议填 3。",
         )
 
+        st.markdown("#### 资源限制")
+        preset_name = st.selectbox("资源预设", ["自定义", *RESOURCE_PRESETS.keys()], index=0)
+        preset = RESOURCE_PRESETS.get(preset_name)
+        effective_settings = {**settings, **(preset or {})}
+        if preset:
+            st.caption(str(preset["description"]))
+        r1, r2, r3 = st.columns(3)
+        device = r1.selectbox(
+            "全局设备",
+            ["auto", "cuda", "cpu"],
+            index=_option_index(["auto", "cuda", "cpu"], effective_settings["resource_device"]),
+        )
+        cuda_memory_fraction = r2.number_input(
+            "CUDA 显存比例",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(effective_settings["cuda_memory_fraction"]),
+            step=0.05,
+            help="0 表示不限制；0.5 表示当前 Python 进程最多向 PyTorch 申请约一半显存。",
+        )
+        torch_num_threads = r3.number_input("CPU 线程", min_value=0, max_value=64, value=int(effective_settings["torch_num_threads"]), step=1)
+
+        r4, r5, r6 = st.columns(3)
+        whisperx_batch_size = r4.number_input("WhisperX batch", min_value=1, max_value=32, value=int(effective_settings["whisperx_batch_size"]), step=1)
+        whisperx_compute_type = r5.selectbox(
+            "WhisperX 类型",
+            ["int8", "float16", "float32", "auto"],
+            index=_option_index(["int8", "float16", "float32", "auto"], effective_settings["whisperx_compute_type"]),
+        )
+        whisperx_align_on_cpu = r6.toggle("对齐走 CPU", value=bool(effective_settings["whisperx_align_on_cpu"]))
+
+        r7, r8 = st.columns(2)
+        demucs_device = r7.selectbox(
+            "Demucs 设备",
+            ["auto", "cuda", "cpu"],
+            index=_option_index(["auto", "cuda", "cpu"], effective_settings["demucs_device"]),
+        )
+        demucs_segment = r8.number_input("Demucs 分段", min_value=0, max_value=60, value=int(effective_settings["demucs_segment"]), step=1)
+
         save, cancel = st.columns(2)
         save_clicked = save.form_submit_button("保存", type="primary", use_container_width=True)
         cancel_clicked = cancel.form_submit_button("取消", use_container_width=True)
@@ -160,11 +256,19 @@ def _settings_dialog(settings: dict[str, object]) -> None:
             "subtitle_rag.window_seconds": int(window_seconds),
             "subtitle_rag.overlap_seconds": int(overlap_seconds),
             "subtitle_rag.max_concurrent_llm_tasks": int(max_concurrent_llm_tasks),
+            "resource_limits.device": str(device),
+            "resource_limits.cuda_memory_fraction": None if float(cuda_memory_fraction) <= 0 else float(cuda_memory_fraction),
+            "resource_limits.torch_num_threads": int(torch_num_threads),
+            "resource_limits.whisperx.batch_size": int(whisperx_batch_size),
+            "resource_limits.whisperx.compute_type": str(whisperx_compute_type),
+            "resource_limits.whisperx.align_on_cpu": bool(whisperx_align_on_cpu),
+            "resource_limits.demucs.device": str(demucs_device),
+            "resource_limits.demucs.segment": int(demucs_segment),
         }
         for key, value in updates.items():
             update_key(key, value)
         st.session_state[SETTINGS_DIALOG_KEY] = False
-        st.toast("设置已保存", icon="✓")
+        st.toast("设置已保存", icon="✅")
         st.rerun()
     if cancel_clicked:
         st.session_state[SETTINGS_DIALOG_KEY] = False
@@ -261,7 +365,22 @@ def _load_settings() -> dict[str, object]:
         "window_seconds": int(_safe_load_key("subtitle_rag.window_seconds", 600)),
         "overlap_seconds": int(_safe_load_key("subtitle_rag.overlap_seconds", 30)),
         "max_concurrent_llm_tasks": int(_safe_load_key("subtitle_rag.max_concurrent_llm_tasks", 3)),
+        "resource_device": str(_safe_load_key("resource_limits.device", "auto")),
+        "cuda_memory_fraction": float(_safe_load_key("resource_limits.cuda_memory_fraction", 0.75) or 0.0),
+        "torch_num_threads": int(_safe_load_key("resource_limits.torch_num_threads", 4)),
+        "whisperx_batch_size": int(_safe_load_key("resource_limits.whisperx.batch_size", 4)),
+        "whisperx_compute_type": str(_safe_load_key("resource_limits.whisperx.compute_type", "int8")),
+        "whisperx_align_on_cpu": bool(_safe_load_key("resource_limits.whisperx.align_on_cpu", False)),
+        "demucs_device": str(_safe_load_key("resource_limits.demucs.device", "auto")),
+        "demucs_segment": int(_safe_load_key("resource_limits.demucs.segment", 8) or 0),
     }
+
+
+def _option_index(options: list[str], value: object) -> int:
+    try:
+        return options.index(str(value))
+    except ValueError:
+        return 0
 
 
 def _safe_load_key(key: str, fallback):

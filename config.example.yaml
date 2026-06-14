@@ -9,6 +9,31 @@ api:
 # Whether to use Demucs for vocal separation before transcription.
 demucs: true
 
+resource_limits:
+  # auto/cuda/cpu. Set to cpu to avoid using the GPU for ASR by default.
+  device: 'auto'
+  # Fraction of CUDA memory PyTorch may reserve in this process. Use 0.5-0.8
+  # to reduce pressure on the rest of the system; set null to disable.
+  cuda_memory_fraction: 0.75
+  # 0 means let PyTorch decide.
+  torch_num_threads: 4
+  whisperx:
+    device: 'auto'
+    # Keep this modest on desktop machines. Older builds used up to 16.
+    batch_size: 4
+    # auto/float16/int8/float32. int8 lowers VRAM use at some speed/quality cost.
+    compute_type: 'int8'
+    # true moves WhisperX alignment to CPU after transcription.
+    align_on_cpu: false
+  qwen3:
+    device: 'auto'
+  demucs:
+    device: 'auto'
+    jobs: 0
+    # 0 means use the model default. Some htdemucs inputs fail with custom segment lengths.
+    segment: 0
+    overlap: 0.25
+
 asr:
   backend: 'whisperx'
   qwen3:
