@@ -73,6 +73,8 @@ def _ask_global_analysis_llm(transcript: str, rag_context: RagContext) -> tuple[
 4. 只整理资料，不直接改写全文，不输出完整字幕。
 5. 对可以明确判断的术语给出推荐写法；无法明确判断的内容标为 uncertain。
 6. 输出要服务后续字幕清洗：简洁、可执行、不要泛泛而谈。
+7. 全局诊断中的领域词、主题词和 confirmed_terms 只作为后续校对的候选参考，不是强制替换表。
+8. 后续校对遇到 ASR 近音误识别时，应优先保持读音相近；不要因为某个主题词在全局诊断中出现，就把局部词替换成读音不近但语义相关的词。
 
 自定义词汇表：
 {glossary_prompt(rag_context.glossary)}
